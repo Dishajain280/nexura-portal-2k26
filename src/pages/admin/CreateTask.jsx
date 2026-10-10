@@ -1,10 +1,25 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Plus, X, Send, Users, Code2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Plus,
+  X,
+  Send,
+  Users,
+  Code2,
+  ChevronDown,
+} from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { DIFFICULTIES } from "../../data/mockData";
 
-const FIXED_CATEGORY = "Web Development";
+// Available categories for tasks (dropdown choices)
+export const TASK_CATEGORIES = [
+  "Technical domain",
+  "Graphical domain",
+  "PR and Management domain",
+  "3D Animation and VFX domain",
+  "Parametric Modelling and Simulation domain",
+];
 
 export default function CreateTask() {
   const { students, createTask } = useApp();
@@ -12,6 +27,7 @@ export default function CreateTask() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [category, setCategory] = useState(TASK_CATEGORIES[0]);
   const [difficulty, setDifficulty] = useState(DIFFICULTIES[1]);
   const [points, setPoints] = useState(100);
   const [deadline, setDeadline] = useState("");
@@ -70,10 +86,14 @@ export default function CreateTask() {
 
     setSubmitting(true);
     try {
-      console.log("[CreateTask] Submitting:", { title: title.trim(), assignedTo, deadline });
+      console.log("[CreateTask] Submitting:", {
+        title: title.trim(),
+        assignedTo,
+        deadline,
+      });
       const result = await createTask({
         title: title.trim(),
-        category: FIXED_CATEGORY,
+        category: category.trim(),
         description: description.trim(),
         difficulty,
         points: Number(points),
@@ -121,9 +141,19 @@ export default function CreateTask() {
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
             <label className="label-text">Category</label>
-            <div className="input-field flex items-center gap-2 text-nexura-200 bg-white/[0.03] cursor-not-allowed select-none">
-              <Code2 className="w-4 h-4 text-nexura-400 shrink-0" />
-              {FIXED_CATEGORY}
+            <div className="relative">
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="input-field appearance-none pr-10"
+              >
+                {TASK_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-4 h-4 text-nexura-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
           </div>
           <div>

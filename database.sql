@@ -36,7 +36,7 @@ create table if not exists public.submissions (
   reviewed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique(student_id, task_id)
+  unique(student_id, task_id, attempt)
 );
 
 create table if not exists public.notifications (
@@ -105,7 +105,11 @@ begin
     if new.role <> 'student' and not public.is_admin() then
       raise exception 'New profiles must start with the student role';
     end if;
-    if new.id is distinct from auth.uid() and not public.is_admin() then
+    -- Only enforce ID check if a user JWT is present (auth.uid() is not null).
+    -- During signup, auth.uid() is null and this trigger runs system-side.
+    if auth.uid() is not null
+       and new.id is distinct from auth.uid()
+       and not public.is_admin() then
       raise exception 'Profile creation is restricted to authenticated users';
     end if;
     return new;
@@ -268,16 +272,16 @@ drop policy if exists "Profiles read all" on public.profiles;
 create policy "Profiles read all" on public.profiles for select using (true);
 
 drop policy if exists "Profiles insert allowed" on public.profiles;
-create policy "Profiles insert allowed" on public.profiles for insert with check (auth.uid() = id and role = 'student');
+create policy "Profiles insert allowed" on public.profiles for insert with check (
+  (auth.uid() = id and role = 'student')
+  or public.is_admin()
+);
 
 drop policy if exists "Profiles update self" on public.profiles;
 create policy "Profiles update self" on public.profiles
 for update
 using (auth.uid() = id)
-with check (
-  auth.uid() = id
-  and role = (select role from public.profiles where id = auth.uid())
-);
+with check (auth.uid() = id);
 
 drop policy if exists "Tasks read all" on public.tasks;
 create policy "Tasks read all" on public.tasks for select using (true);
@@ -349,10 +353,17 @@ grant usage on schema public to anon, authenticated;
 grant select on public.profiles, public.tasks, public.submissions to authenticated;
 grant select, insert, update, delete on public.notifications to authenticated;
 grant insert, update, delete on public.tasks, public.submissions to authenticated;
+grant update on public.profiles to authenticated;
 
--- 8. FIXED Realtime Configurations (Simplified to completely bypass system column limits)
-drop publication if exists supabase_realtime;
-create publication supabase_realtime for table public.profiles, public.tasks, public.submissions, public.notifications;
+-- 8. Realtime Configurations
+-- Note: Only create if not exists to preserve existing subscriptions.
+do $$
+begin
+  create publication supabase_realtime for table public.profiles, public.tasks, public.submissions, public.notifications;
+exception when others then
+  null; -- Publication may already exist; ignore the error.
+end
+$$;
 
 -- 9. Storage Bucket Initialization
 insert into storage.buckets (id, name, public)
