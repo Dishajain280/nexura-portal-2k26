@@ -28,3 +28,6 @@ sites/
 DESIGN_DOC.md
 DOMAIN_COORDINATOR_PLAN.md
 REPORT_FOR_HEAD_REVIEW.md
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

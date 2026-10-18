@@ -1,10 +1,25 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Plus, X, Send, Users, Code2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Plus,
+  X,
+  Send,
+  Users,
+  Layers,
+  ChevronDown,
+} from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { DIFFICULTIES } from "../../data/mockData";
-
-const FIXED_CATEGORY = "Web Development";
+// Club domains live in one place now, alongside their database slugs — see
+// src/lib/domains.js for why the labels must stay byte-exact.
+import {
+  DOMAINS,
+  TASK_CATEGORIES,
+  getDomainLabel,
+  getDomainSlug,
+  getAuthDomain,
+} from "../../lib/domains";
 
 export default function CreateTask() {
   const { auth, students, createTask } = useApp();
@@ -22,7 +37,6 @@ export default function CreateTask() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState(TASK_CATEGORIES[0]);
   const [difficulty, setDifficulty] = useState(DIFFICULTIES[1]);
   const [points, setPoints] = useState(100);
   const [deadline, setDeadline] = useState("");
@@ -95,7 +109,10 @@ export default function CreateTask() {
       });
       const result = await createTask({
         title: title.trim(),
-        category: FIXED_CATEGORY,
+        category: category.trim(),
+        // The slug, which is the authoritative key; `category` above stays as
+        // the display value every task card and detail view renders.
+        domain: effectiveDomain,
         description: description.trim(),
         difficulty,
         points: Number(points),
@@ -142,11 +159,42 @@ export default function CreateTask() {
 
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
-            <label className="label-text">Category</label>
-            <div className="input-field flex items-center gap-2 text-nexura-200 bg-white/[0.03] cursor-not-allowed select-none">
-              <Code2 className="w-4 h-4 text-nexura-400 shrink-0" />
-              {FIXED_CATEGORY}
-            </div>
+            <label className="label-text">Domain</label>
+            {lockedDomain ? (
+              // Read-only for a scoped coordinator. A dropdown they are not
+              // allowed to use only invited the mistake of picking another
+              // domain, which the database would reject.
+              <div
+                className="input-field flex items-center gap-2 cursor-not-allowed"
+                aria-readonly="true"
+              >
+                <Layers className="w-4 h-4 text-nexura-400 shrink-0" />
+                <span className="truncate">{getDomainLabel(lockedDomain)}</span>
+              </div>
+            ) : (
+              <div className="relative">
+                <select
+                  value={effectiveDomain}
+                  onChange={(e) => setDomainSlug(e.target.value)}
+                  className="input-field appearance-none pr-10"
+                >
+                  {DOMAINS.map((d) => (
+                    <option key={d.slug} value={d.slug}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-4 h-4 text-nexura-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            )}
+            {lockedDomain && (
+              <p className="text-xs text-nexura-400 mt-1">
+                Tasks are always filed in your own domain.
+              </p>
+            )}
+            {errors.category && (
+              <p className="text-xs text-red-400 mt-1">{errors.category}</p>
+            )}
           </div>
           <div>
             <label className="label-text">Difficulty</label>
