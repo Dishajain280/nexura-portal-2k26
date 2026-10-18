@@ -1,14 +1,16 @@
 import React from "react";
 import { useParams, Link, Navigate } from "react-router-dom";
-import { ArrowLeft, Github, Globe, Paperclip, MessageSquareText, CalendarDays, RefreshCcw } from "lucide-react";
+import { ArrowLeft, Github, Globe, Paperclip, MessageSquareText, CalendarDays, RefreshCcw, ExternalLink } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import StatusBadge from "../../components/StatusBadge";
 import { formatDateTime, getTaskById } from "../../data/mockData";
 import { sanitizeUrl } from "../../lib/sanitizeUrl";
+import { isStorageFileUrl, extractStoragePath } from "../../lib/submissionFile";
+import SubmissionFilePreview from "../../components/SubmissionFilePreview";
 
 export default function SubmissionDetails() {
   const { id } = useParams();
-  const { submissions, getTask } = useApp();
+  const { submissions, getTask, openSubmissionFile } = useApp();
   const sub = submissions.find((s) => s.id === id);
 
   if (!sub) return <Navigate to="/student/submissions" replace />;
@@ -32,16 +34,18 @@ export default function SubmissionDetails() {
         <div className="flex items-center gap-4 mt-4 text-sm text-slate flex-wrap">
           <span className="inline-flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> Submitted {formatDateTime(sub.submittedAt)}</span>
           {sub.attempt > 1 && <span className="text-nexura-400 font-medium">Attempt {sub.attempt}</span>}
-        </div>
-
-        <div className="mt-6 space-y-3">
+        </div>          <div className="mt-6 space-y-3">
           <h3 className="font-display font-semibold text-white mb-1">Submitted Work</h3>
+
           {sub.fileName && (
-            <div className="flex items-center gap-3 rounded-lg border border-white/10 px-4 py-3 text-sm">
-              <Paperclip className="w-4 h-4 text-nexura-400 shrink-0" />
-              <span className="text-nexura-100">{sub.fileName}</span>
-            </div>
+            <SubmissionFilePreview
+              fileName={sub.fileName}
+              fileUrl={sub.fileUrl || sub.file_url || ""}
+              storagePath={isStorageFileUrl(sub.fileUrl || sub.file_url || "") || sub.fileUrl ? extractStoragePath(sub.fileUrl || sub.file_url || "") : ""}
+              onOpen={() => openSubmissionFile(sub)}
+            />
           )}
+
           {sub.githubUrl && (
             <div className="flex items-center gap-3 rounded-lg border border-white/10 px-4 py-3 text-sm">
               <Github className="w-4 h-4 text-nexura-400 shrink-0" />

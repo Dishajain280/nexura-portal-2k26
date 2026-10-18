@@ -1,12 +1,22 @@
 // Central mock dataset for the Nexura portal. Frontend-only, in-memory.
 
+// `domain` mirrors what the profiles table holds in production, where every
+// account carries the domain it belongs to (chosen at signup or assigned by a
+// coordinator). The offline roster previously left the field off every row, so
+// the Students page showed the whole club as "No domain yet" and the
+// unassigned filter matched everyone — an offline demo that misrepresents what
+// the coordinator actually sees.
+//
+// s1 is deliberately left WITHOUT one: it is the demo student's own row, and
+// the one-time domain claim on the profile page needs an unassigned account to
+// be reachable offline.
 export const STUDENTS = [
   { id: "s1", name: "Aarav Mehta", email: "aarav.mehta@nexura.club", rollNo: "CS21B045", branch: "Computer Science", year: "3rd Year", avatarColor: "#7C3AED", joined: "2024-08-12" },
-  { id: "s2", name: "Diya Kapoor", email: "diya.kapoor@nexura.club", rollNo: "CS21B012", branch: "Computer Science", year: "3rd Year", avatarColor: "#C026D3", joined: "2024-08-12" },
-  { id: "s3", name: "Rohan Iyer", email: "rohan.iyer@nexura.club", rollNo: "EC21B078", branch: "Electronics", year: "3rd Year", avatarColor: "#5B21B6", joined: "2024-09-02" },
-  { id: "s4", name: "Ananya Sharma", email: "ananya.sharma@nexura.club", rollNo: "IT21B033", branch: "Information Tech", year: "2nd Year", avatarColor: "#9F67F5", joined: "2024-09-15" },
-  { id: "s5", name: "Kabir Singh", email: "kabir.singh@nexura.club", rollNo: "CS22B091", branch: "Computer Science", year: "2nd Year", avatarColor: "#E879F9", joined: "2025-01-10" },
-  { id: "s6", name: "Meera Nair", email: "meera.nair@nexura.club", rollNo: "CS21B056", branch: "Computer Science", year: "3rd Year", avatarColor: "#7C3AED", joined: "2024-08-20" },
+  { id: "s2", name: "Diya Kapoor", email: "diya.kapoor@nexura.club", rollNo: "CS21B012", branch: "Computer Science", year: "3rd Year", avatarColor: "#C026D3", joined: "2024-08-12", domain: "graphical" },
+  { id: "s3", name: "Rohan Iyer", email: "rohan.iyer@nexura.club", rollNo: "EC21B078", branch: "Electronics", year: "3rd Year", avatarColor: "#5B21B6", joined: "2024-09-02", domain: "technical" },
+  { id: "s4", name: "Ananya Sharma", email: "ananya.sharma@nexura.club", rollNo: "IT21B033", branch: "Information Tech", year: "2nd Year", avatarColor: "#9F67F5", joined: "2024-09-15", domain: "pr_management" },
+  { id: "s5", name: "Kabir Singh", email: "kabir.singh@nexura.club", rollNo: "CS22B091", branch: "Computer Science", year: "2nd Year", avatarColor: "#E879F9", joined: "2025-01-10", domain: "animation_vfx" },
+  { id: "s6", name: "Meera Nair", email: "meera.nair@nexura.club", rollNo: "CS21B056", branch: "Computer Science", year: "3rd Year", avatarColor: "#7C3AED", joined: "2024-08-20", domain: "parametric" },
 ];
 
 export const CURRENT_STUDENT_ID = "s1";
@@ -59,7 +69,7 @@ export const TASKS = [
   {
     id: "t3",
     title: "UI/UX Case Study: Redesign a Campus App",
-    category: "Design",
+    category: "Design & Animation",
     description:
       "Pick any existing campus utility (canteen, library, attendance) and produce a short case study redesigning its UI. Include wireframes and a Figma prototype link.",
     requirements: [
@@ -77,7 +87,7 @@ export const TASKS = [
   {
     id: "t4",
     title: "Git & GitHub Workflow Challenge",
-    category: "Tools",
+    category: "Tech & Tools",
     description:
       "Fork the Nexura sample repo, create a feature branch, resolve the seeded merge conflict, and open a PR following the club's contribution guidelines.",
     requirements: [
@@ -95,7 +105,7 @@ export const TASKS = [
   {
     id: "t5",
     title: "Data Structures: Visualize a Graph Traversal",
-    category: "DSA",
+    category: "Tech & Tools",
     description:
       "Build a small web app that visualizes BFS and DFS traversal on a user-defined graph. Prioritize clarity of animation over visual complexity.",
     requirements: [
@@ -258,7 +268,7 @@ export const NOTIFICATIONS_ADMIN = [
   { id: "an5", type: "info", title: "New member joined", message: "Kabir Singh joined Nexura and was added to the roster.", time: "2026-01-10T09:00:00", read: true, link: "/coordinator/students" },
 ];
 
-export const CATEGORIES = ["Web Development", "Backend Development", "Design", "Tools", "DSA"];
+export const CATEGORIES = ["Web Development", "Backend Development", "Design & Animation", "Graphics & Design", "PR & Management", "Tech & Tools"];
 export const DIFFICULTIES = ["Beginner", "Intermediate", "Advanced"];
 
 // ---- Helpers ----

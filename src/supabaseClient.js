@@ -15,35 +15,30 @@ const supabaseAnonKey =
   env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 const createNoopSupabase = () => {
-  const emptyResult = (data = null) => Promise.resolve({ data, error: null });
-
+  // Thenable, chainable builder that mimics supabase-js: every builder method
+  // returns the chain itself and awaiting it resolves { data, error }.
+  // Terminal single()/maybeSingle() resolve a null row instead.
+  //
+  // This matters: callers run `.update(x).eq(y).select().single()`. The old
+  // partial mock ended the chain at `.eq()`, so `.select()` threw "select is
+  // not a function" — demo-mode reviews failed and silently reverted the
+  // optimistic status change.
   const queryBuilder = {
-    select: () => ({
-      eq: () => ({
-        maybeSingle: () => emptyResult(null),
-        single: () => emptyResult(null),
-        order: () => emptyResult([]),
-      }),
-      order: () => emptyResult([]),
-      maybeSingle: () => emptyResult(null),
-      single: () => emptyResult(null),
-    }),
-    eq: () => ({
-      maybeSingle: () => emptyResult(null),
-      single: () => emptyResult(null),
-      order: () => emptyResult([]),
-    }),
-    update: () => ({
-      eq: () => emptyResult(null),
-    }),
-    delete: () => ({
-      eq: () => emptyResult(null),
-    }),
-    insert: () => ({
-      select: () => ({
-        single: () => emptyResult(null),
-      }),
-    }),
+    select: () => queryBuilder,
+    insert: () => queryBuilder,
+    update: () => queryBuilder,
+    upsert: () => queryBuilder,
+    delete: () => queryBuilder,
+    eq: () => queryBuilder,
+    neq: () => queryBuilder,
+    in: () => queryBuilder,
+    is: () => queryBuilder,
+    order: () => queryBuilder,
+    limit: () => queryBuilder,
+    maybeSingle: () => Promise.resolve({ data: null, error: null }),
+    single: () => Promise.resolve({ data: null, error: null }),
+    then: (onFulfilled, onRejected) =>
+      Promise.resolve({ data: [], error: null }).then(onFulfilled, onRejected),
   };
 
   return {

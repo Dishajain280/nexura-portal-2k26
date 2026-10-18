@@ -49,6 +49,7 @@ export default function Profile() {
             <button type="submit" className="btn-primary w-full">
               <Save className="w-4 h-4" /> Save changes
             </button>
+            <p className="text-xs text-slate mt-2">Coordinator details are managed by the team.</p>
           </form>
         </div>
 

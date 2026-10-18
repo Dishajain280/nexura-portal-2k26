@@ -1,17 +1,19 @@
 import React, { useState } from "react";
 import { useParams, useNavigate, Link, Navigate } from "react-router-dom";
-import { ArrowLeft, Github, Globe, Paperclip, CalendarDays, CheckCircle2, XCircle, Trash2, FileText } from "lucide-react";
+import { ArrowLeft, Github, Globe, Paperclip, CalendarDays, CheckCircle2, XCircle, Trash2, FileText, ExternalLink } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import StatusBadge from "../../components/StatusBadge";
 import Modal from "../../components/Modal";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { formatDateTime, getStudentById, getTaskById } from "../../data/mockData";
 import { sanitizeUrl } from "../../lib/sanitizeUrl";
+import { isStorageFileUrl, extractStoragePath } from "../../lib/submissionFile";
+import SubmissionFilePreview from "../../components/SubmissionFilePreview";
 
 export default function ReviewSubmission() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { submissions, reviewSubmission, removeSubmission, getStudent, getTask } = useApp();
+  const { submissions, reviewSubmission, removeSubmission, getStudent, getTask, openSubmissionFile } = useApp();
   const sub = submissions.find((s) => s.id === id);
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -75,15 +77,18 @@ export default function ReviewSubmission() {
             <span className="inline-flex items-center gap-1.5"><CalendarDays className="w-4 h-4" /> Submitted {formatDateTime(sub.submittedAt)}</span>
             {sub.attempt > 1 && <span className="text-nexura-400 font-medium">Attempt {sub.attempt}</span>}
           </div>
-        </div>
-
-        <div className="mt-6 space-y-3">
+        </div>          <div className="mt-6 space-y-3">
           <h3 className="font-display font-semibold text-white">Submitted Work</h3>
+
           {sub.fileName && (
-            <div className="flex items-center gap-3 rounded-lg border border-white/10 px-4 py-3 text-sm">
-              <Paperclip className="w-4 h-4 text-nexura-400 shrink-0" /> <span className="text-nexura-100">{sub.fileName}</span>
-            </div>
+            <SubmissionFilePreview
+              fileName={sub.fileName}
+              fileUrl={sub.fileUrl || sub.file_url || ""}
+              storagePath={isStorageFileUrl(sub.fileUrl || sub.file_url || "") || sub.fileUrl ? extractStoragePath(sub.fileUrl || sub.file_url || "") : ""}
+              onOpen={() => openSubmissionFile(sub)}
+            />
           )}
+
           {sub.githubUrl && (
             <div className="flex items-center gap-3 rounded-lg border border-white/10 px-4 py-3 text-sm">
               <Github className="w-4 h-4 text-nexura-400 shrink-0" />
@@ -100,9 +105,25 @@ export default function ReviewSubmission() {
         </div>
 
         {sub.notes && (
-          <div className="mt-6">
-            <h3 className="font-display font-semibold text-white mb-2 flex items-center gap-2"><FileText className="w-4.5 h-4.5 text-nexura-400" /> Student Notes</h3>
-            <p className="text-sm text-slate leading-relaxed bg-white/5 rounded-lg p-4">{sub.notes}</p>
+        <div className="mt-6">
+          <h3 className="font-display font-semibold text-white mb-2 flex items-center gap-2"><FileText className="w-4.5 h-4.5 text-nexura-400" /> Student Notes</h3>
+          <p className="text-sm text-slate leading-relaxed bg-white/5 rounded-lg p-4">{sub.notes}</p>
+
+          {sub.fileName && (
+            <div className="mt-4 rounded-lg border border-white/10 px-4 py-3 flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-2.5 text-nexura-100">
+                <Paperclip className="w-4 h-4 text-nexura-400 shrink-0" />
+                <span className="truncate">{sub.fileName}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => openSubmissionFile(sub)}
+                className="shrink-0 text-nexura-300 hover:text-nexura-100 hover:underline flex items-center gap-1.5"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Open file
+              </button>
+            </div>
+          )}
           </div>
         )}
 

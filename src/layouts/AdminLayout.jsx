@@ -17,6 +17,11 @@ export default function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const title =
+    // Precedence: without the parentheses `||` binds tighter than `?:`, so the
+    // whole expression became `TITLES[path] || includes(...) ? "Review
+    // Submission" : …` — every KNOWN route therefore matched the first branch
+    // and the header read "Review Submission" on the dashboard, task list and
+    // students page alike.
     TITLES[location.pathname] ||
     (location.pathname.includes("/submissions/")
       ? "Review Submission"
@@ -25,7 +30,7 @@ export default function AdminLayout() {
         : "Nexura");
 
   return (
-    <div className="min-h-screen flex bg-surface bg-nexura-radial">
+    <div className="min-h-screen flex bg-surface">
       <Sidebar
         role="coordinator"
         mobileOpen={mobileOpen}
@@ -37,8 +42,10 @@ export default function AdminLayout() {
           title={title}
           onOpenMobile={() => setMobileOpen(true)}
         />
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          <Outlet />
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
+          <div className="max-w-5xl mx-auto">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

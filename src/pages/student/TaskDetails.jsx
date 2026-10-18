@@ -35,7 +35,7 @@ export default function TaskDetails() {
       <div className="card p-6 sm:p-7">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <p className="text-xs font-semibold text-nexura-400 mb-1.5">{task.category}</p>
+            <p className="text-xs font-semibold text-nexura-400 mb-1.5">{task.category || "Web Development"}</p>
             <h1 className="font-display text-2xl font-bold text-white">{task.title}</h1>
           </div>
           <StatusBadge status={overdue && status === "not_submitted" ? "overdue" : status} />

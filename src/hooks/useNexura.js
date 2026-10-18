@@ -1,5 +1,6 @@
-import supabase from "../supabaseClient";
+import supabase, { isSupabaseConfigured } from "../supabaseClient";
 import { isUniversityEmail } from "../lib/roleGuard";
+import { getAuthCallbackUrl } from "../lib/authRedirect";
 
 // Real Supabase users have UUID ids; demo/local fallback users do not.
 const isDbUuid = (value = "") =>
@@ -7,17 +8,43 @@ const isDbUuid = (value = "") =>
     String(value),
   );
 
-export async function signUpUser(email, password, name) {
+export async function signUpUser(email, password, name, domain = null) {
   if (!isUniversityEmail(email))
     throw new Error("Only .com university emails are allowed");
 
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { name } },
+    options: {
+      data: {
+        name,
+        // The student's club domain, chosen on the signup form. The database
+        // trigger validates this against the five known slugs and ignores
+        // anything else: it is metadata, not an authorization decision, so a
+        // forged value buys nothing beyond a domain the account may pick at
+        // signup anyway.
+        domain: domain || null,
+      },
+      // When the project requires email confirmation, the link in that email
+      // has to come back to a route this app actually serves. Without this it
+      // fell back to the provider's Site URL and dumped the user on the public
+      // landing page, signed in but with no explanation. /auth/callback already
+      // completes the exchange and routes by the account's real role, so the
+      // confirmation path now lands somewhere that works.
+      emailRedirectTo: getAuthCallbackUrl(),
+    },
   });
 
-  if (error) throw error;
+  if (error) {
+    // Surface the provider message (e.g. email already in use) instead of
+    // inventing our own — the UI already renders form.errors.form.
+    throw error;
+  }
+
+  if (!data?.user) {
+    throw new Error("Signup succeeded but no user was returned.");
+  }
+
   return data;
 }
 
@@ -32,14 +59,23 @@ export async function loginUser(email, password) {
   });
   if (error) throw error;
   if (!data?.user) throw new Error("Invalid login credentials");
+  if (!data?.user?.email) throw new Error("Invalid login credentials");
   return data;
 }
 
-export async function fetchTasks() {
-  const { data, error } = await supabase
+export async function fetchTasks(domain = null) {
+  let query = supabase
     .from("tasks")
     .select("*")
     .order("deadline", { ascending: true });
+
+  // Defence in depth. The row-level policies already scope this, so on a
+  // correctly migrated database the filter changes nothing — it just means the
+  // app requests only what it can render instead of asking for every row and
+  // relying on the server to discard most of them.
+  if (domain) query = query.eq("domain", domain);
+
+  const { data, error } = await query;
 
   if (error) throw error;
   return data ?? [];
@@ -72,8 +108,33 @@ export async function createTask(taskData) {
   }
 
   console.log("[createTask] isAuthorized:", isAuthorized);
-  if (!isAuthorized) {
-    throw new Error("Coordinator or Admin access required to create tasks");
+
+  // Fail closed: when a real Supabase backend is configured the DB path
+  // below is mandatory. A missing coordinator profile or a failed role lookup
+  // means "do not create the task" — never silently fall back to local state,
+  // because that would make a coordinator think the task was persisted when it
+  // was only added to this browser's in-memory list.
+  if (!isSupabaseConfigured) {
+    // Unconfigured builds are the only safe local-only creation path. In that
+    // mode there is no backend to contradict the UI, so a synthetic task is
+    // the correct behavior for demo/development.
+    return {
+      id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      title: taskData.title?.trim() || "Untitled Task",
+      description: taskData.description?.trim() || "",
+      deadline: taskData.deadline || new Date().toISOString(),
+      points: Number(taskData.points || 10),
+      category: taskData.category || "General",
+      domain: taskData.domain || null,
+      difficulty: taskData.difficulty || "Medium",
+      requirements: Array.isArray(taskData.requirements)
+        ? taskData.requirements
+        : [],
+      assigned_to: Array.isArray(taskData.assignedTo)
+        ? taskData.assignedTo
+        : [],
+      created_at: new Date().toISOString(),
+    };
   }
 
   // Parse the deadline date and set it to end-of-day (23:59:59) so the
@@ -90,6 +151,11 @@ export async function createTask(taskData) {
     deadline: deadline.toISOString(),
     points: Number(taskData.points || 10),
     category: taskData.category || "General",
+    // Sent explicitly rather than left for the database trigger to fill: the
+    // trigger still has the final say (and rejects a domain the caller cannot
+    // reach), but an explicit value keeps the row's intent visible in the
+    // request and surfaces a mismatch immediately.
+    domain: taskData.domain || null,
     difficulty: taskData.difficulty || "Medium",
     requirements: Array.isArray(taskData.requirements)
       ? taskData.requirements
@@ -156,6 +222,10 @@ export async function submitTask(file, taskId, studentId, metadata = {}) {
         github_url: metadata.githubUrl || "",
         live_url: metadata.liveUrl || "",
         notes: metadata.notes || "",
+        attempt: metadata.attempt || 1,
+        // created_at drives the "Submitted" timestamp shown in the UI, so a
+        // resubmission must advance it to now.
+        created_at: new Date().toISOString(),
         status: "pending",
       })
       .eq("id", existingSubmission.id)
@@ -176,6 +246,7 @@ export async function submitTask(file, taskId, studentId, metadata = {}) {
           github_url: metadata.githubUrl || "",
           live_url: metadata.liveUrl || "",
           notes: metadata.notes || "",
+          attempt: metadata.attempt || 1,
           status: "pending",
         },
       ])

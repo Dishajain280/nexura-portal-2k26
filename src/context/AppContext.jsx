@@ -5,11 +5,13 @@ import React, {
   useCallback,
   useMemo,
   useEffect,
+  useRef,
 } from "react";
 import {
   STUDENTS,
   TASKS,
   SUBMISSIONS,
+  ADMIN_USER,
   NOTIFICATIONS_STUDENT,
   NOTIFICATIONS_ADMIN,
   getStudentById as getMockStudentById,
@@ -24,6 +26,9 @@ import {
   submitTask as submitDbTask,
 } from "../hooks/useNexura";
 import { normalizeRole } from "../lib/roleGuard";
+import { getAuthDomain } from "../lib/domains";
+import { openSafeUrl } from "../lib/sanitizeUrl";
+import { extractStoragePath, isStorageFileUrl } from "../lib/submissionFile";
 
 const AppContext = createContext(null);
 
@@ -89,7 +94,13 @@ const normalizeSubmission = (row) => ({
   studentId: row.student_id || row.studentId,
   status: row.status || "pending",
   submittedAt: row.created_at || row.submittedAt || new Date().toISOString(),
-  fileName: row.file_url ? row.file_url.split("/").pop() : row.fileName || "",
+  fileUrl: row.file_url || row.fileUrl || "",
+  // Only treat file_url as an attachment when it really points at storage:
+  // older rows stored an external link there, which must not render as a
+  // fake filename/paperclip. Also drop any ?token= query from signed URLs.
+  fileName: isStorageFileUrl(row.file_url || "")
+    ? decodeURIComponent(String(row.file_url).split("/").pop().split("?")[0])
+    : row.fileName || "",
   githubUrl: row.github_url || row.githubUrl || "",
   liveUrl: row.live_url || row.liveUrl || "",
   notes: row.notes || row.note || "",
@@ -129,14 +140,28 @@ const buildAuthState = (user, profile) => {
   // trust user_metadata.role — it is client-supplied at signup and could be
   // forged to request coordinator access.
   const role = normalizeRole(profile?.role || "student");
+  // The domain comes from the profile row, never from user metadata. It decides
+  // which tasks and submissions this account can reach, so it is server data:
+  // client-supplied metadata is fine for choosing a domain at signup, but not
+  // for deciding what that domain grants.
+  const domain = profile?.domain || null;
+  // normalizeRole folds `admin` into `coordinator` so routing treats the
+  // super-admin like staff — which means auth.role alone can no longer tell an
+  // unscoped super-admin (sees every domain by design) apart from a domain
+  // coordinator who simply has no domain yet (must see nothing). Keep the raw
+  // flag for the roster scope in syncLiveData.
+  const superAdmin = profile?.role === "admin";
   return {
     role,
+    domain,
+    superAdmin,
     user: {
       id: user.id,
       email: user.email,
       name:
         profile?.name || user.user_metadata?.name || user.email.split("@")[0],
       role,
+      domain,
       avatarColor: role === "coordinator" ? "#5B21B6" : "#7C3AED",
       rollNo: profile?.roll_no || "CS21B045",
       branch: profile?.branch || "Computer Science",
@@ -150,11 +175,40 @@ const buildAuthState = (user, profile) => {
 
 export function AppProvider({ children }) {
   const [auth, setAuth] = useState(null);
-  const [students, setStudents] = useState(STUDENTS);
-  const [tasks, setTasks] = useState(TASKS);
-  const [submissions, setSubmissions] = useState(SUBMISSIONS);
-  const [studentNotifs, setStudentNotifs] = useState(NOTIFICATIONS_STUDENT);
-  const [adminNotifs, setAdminNotifs] = useState(NOTIFICATIONS_ADMIN);
+  // Set once the one-time session bootstrap below has finished deciding
+  // whether a session exists. Without it, ProtectedRoute sees `auth === null`
+  // for the tick before the async restore lands and redirects a hard refresh
+  // of e.g. /student/profile away — the URL the user asked for is lost.
+  const [authReady, setAuthReady] = useState(false);
+  // The seeded roster is demo data: in live mode the profiles table is the
+  // only source of truth, and starting from the mock list flashed six fake
+  // students — from domains other than the caller's — on every cold load of
+  // the Students page before the first sync replaced them.
+  const [students, setStudents] = useState(
+    isSupabaseConfigured ? [] : STUDENTS
+  );
+  // Like the roster above: the seeded tasks/submissions are demo data. In
+  // live mode they flashed fake counts, statuses and names on the dashboard
+  // for the beat before the first sync replaced them — and stayed on screen
+  // whenever that sync failed. Start empty in live mode; only the database
+  // fills these. Demo builds (no backend configured) keep the seed.
+  const [tasks, setTasks] = useState(isSupabaseConfigured ? [] : TASKS);
+  const [submissions, setSubmissions] = useState(
+    isSupabaseConfigured ? [] : SUBMISSIONS
+  );
+  // Seeded inboxes are demo data: they belong to the mock session only. In
+  // live mode the DB is the source of truth, and starting from the seeded
+  // rows made a real coordinator's bell flash "3 unread" notifications that
+  // do not exist for their account until the first sync replaced them —
+  // phantom rows pointing at demo content the RLS policies would never
+  // return. Start empty in live mode so what the bell shows is only ever
+  // what the caller is actually allowed to read.
+  const [studentNotifs, setStudentNotifs] = useState(
+    isSupabaseConfigured ? [] : NOTIFICATIONS_STUDENT
+  );
+  const [adminNotifs, setAdminNotifs] = useState(
+    isSupabaseConfigured ? [] : NOTIFICATIONS_ADMIN
+  );
   const [toasts, setToasts] = useState([]);
 
   const pushToast = useCallback((message, type = "success") => {
@@ -169,10 +223,47 @@ export function AppProvider({ children }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const syncLiveData = useCallback(async () => {
+  const syncLiveData = useCallback(async (authOverride) => {
+    // Demo mode has no external source of truth, so there is nothing to
+    // refresh — and re-seeding the mock data here actively destroys this
+    // session's own work. This callback is also the polling/realtime handler,
+    // so it runs again a few seconds after any change: a student's freshly
+    // submitted work (and a coordinator's review or roster edit) silently
+    // reverted to the seeded row, which read as "my submission disappeared".
+    // The initial state already comes from the same mock data, so returning
+    // early loses nothing.
+    if (!isSupabaseConfigured) return;
+
+    // Before sign-in there is no JWT to present: every request below would go
+    // out as the `anon` role, which holds no SELECT privilege on these tables,
+    // so each one returns 401 — and the bootstrap runs this on the public
+    // landing page too, littering the console of a visitor who has not logged
+    // in yet. getSession() reads the locally persisted session (no network
+    // round trip), so a signed-in caller continues immediately and a
+    // signed-out one returns quietly instead of firing requests it cannot win.
+    const { data: sessionProbe } = await supabase.auth.getSession();
+    if (!sessionProbe?.session) return;
+
     try {
+      // The auth THIS sync should operate on. Callers that have just changed
+      // the session (login, the bootstrap restore) pass the state they
+      // committed, because the closure variable still holds the previous
+      // render's value at that moment: syncing against a null auth applied the
+      // fail-closed roster rule below to everyone (Total Students showed 0)
+      // and skipped the notification fetch entirely — wrong dashboard numbers
+      // until a later poll or reload caught up.
+      const liveAuth = authOverride || auth;
+      // The caller's domain. getAuthDomain() reads the session level first and
+      // falls back to auth.user — every constructor (buildAuthState and the
+      // hand-built demo states) writes both levels from the same value, so
+      // auth?.user changing identity remains the change signal this callback is
+      // keyed on. Null for a super-admin or an account that has not chosen one
+      // yet — both see the unfiltered request, and the database policies decide
+      // what actually comes back.
+      const callerDomain = getAuthDomain(liveAuth);
+
       const [taskRows, profileRows, submissionRows] = await Promise.all([
-        fetchDbTasks().catch(() => []),
+        fetchDbTasks(callerDomain).catch(() => []),
         safeSupabaseQuery(
           supabase
             .from("profiles")
@@ -187,10 +278,10 @@ export function AppProvider({ children }) {
         ),
       ]);
 
-      // When a real Supabase backend is configured, use ONLY DB data.
-      // Mock data is only shown in local/demo mode (noop client).
+      // A real Supabase backend is configured here (see the guard at the top of
+      // this callback), so use ONLY DB data — never the mock fallback.
       let liveStudents = [];
-      if (isSupabaseConfigured && profileRows?.data && profileRows.data.length > 0) {
+      if (profileRows?.data && profileRows.data.length > 0) {
         liveStudents = profileRows.data
           .filter((p) => p.role === "student" || !p.role || p.role === "")
           .map((p) => ({
@@ -204,58 +295,71 @@ export function AppProvider({ children }) {
               `CS21B${String(p.id).slice(0, 3).toUpperCase()}`,
             branch: p.branch || "Computer Science",
             year: p.year || "3rd Year",
+            // Carried through so the roster can show which domain a student is
+            // in, and know when one is still unassigned (unassigned = the
+            // coordinator may place them; assigned = the club owns it).
+            domain: p.domain || null,
             avatarColor: "#7C3AED",
             joined: p.created_at
               ? new Date(p.created_at).toISOString().slice(0, 10)
               : "2024-08-12",
           }));
-      } else if (!isSupabaseConfigured) {
-        // Demo mode: use mock data only.
-        liveStudents = [...STUDENTS];
       }
 
-      if (auth?.user) {
-        const userInList = liveStudents.find((s) => s.id === auth.user.id);
-        if (!userInList && auth.user.role === "student") {
-          liveStudents.unshift(auth.user);
+      if (liveAuth?.user) {
+        const userInList = liveStudents.find((s) => s.id === liveAuth.user.id);
+        if (!userInList && liveAuth.user.role === "student") {
+          liveStudents.unshift(liveAuth.user);
         } else if (userInList) {
           Object.assign(userInList, {
-            name: auth.user.name || userInList.name,
-            email: auth.user.email || userInList.email,
+            name: liveAuth.user.name || userInList.name,
+            email: liveAuth.user.email || userInList.email,
           });
         }
+      }
+
+      // Rosters are domain-scoped: a coordinator sees only their own domain's
+      // students — the same rule the profiles SELECT policy enforces server-
+      // side (migrations/2026-10-18-profiles-read-domain-scoping.sql). The
+      // unscoped super-admin keeps every domain; anyone else without a domain
+      // fails closed to an empty roster rather than inheriting everyone's.
+      if (!liveAuth?.superAdmin) {
+        liveStudents = callerDomain
+          ? liveStudents.filter((s) => s.domain === callerDomain)
+          : [];
       }
 
       setStudents(liveStudents);
 
       const allStudentIds = liveStudents.map((s) => s.id);
 
-      if (isSupabaseConfigured) {
-        // Real backend: use ONLY DB data. If the DB returns empty arrays,
-        // set empty state — never fall back to mock data.
-        const dbTasks = taskRows?.length > 0
-          ? taskRows.map((t) => normalizeTask(t, allStudentIds))
-          : [];
-        setTasks(dbTasks);
+      // Use ONLY DB data. If the DB returns empty arrays, set empty state —
+      // never fall back to mock data.
+      const dbTasks = taskRows?.length > 0
+        ? taskRows.map((t) => normalizeTask(t, allStudentIds))
+        : [];
+      setTasks(dbTasks);
 
-        const dbSubs = submissionRows?.data?.length > 0
-          ? submissionRows.data.map(normalizeSubmission)
-          : [];
-        setSubmissions(dbSubs);
-      } else {
-        // Demo mode: use mock data only.
-        setTasks(TASKS);
-        setSubmissions(SUBMISSIONS);
-      }
+      // Submissions carry no domain of their own — their domain is their
+      // task's. The tasks above are already scoped, so keeping only
+      // submissions against a visible task matches what the policies allow
+      // and stops the UI rendering a row whose task the user cannot open.
+      const visibleTaskIds = new Set(dbTasks.map((t) => t.id));
+      const dbSubs = submissionRows?.data?.length > 0
+        ? submissionRows.data
+            .map(normalizeSubmission)
+            .filter((s) => !callerDomain || visibleTaskIds.has(s.taskId))
+        : [];
+      setSubmissions(dbSubs);
 
       // Persistent notifications (real Supabase users only — demo/local
       // sessions keep the seeded mock notifications).
-      if (auth?.user && isDbUuid(auth.user.id)) {
+      if (liveAuth?.user && isDbUuid(liveAuth.user.id)) {
         const notifResult = await safeSupabaseQuery(
           supabase
             .from("notifications")
             .select("*")
-            .eq("user_id", auth.user.id)
+            .eq("user_id", liveAuth.user.id)
             .order("created_at", { ascending: false })
             .limit(50),
         );
@@ -269,7 +373,7 @@ export function AppProvider({ children }) {
             read: n.read,
             time: n.created_at,
           }));
-          if (normalizeRole(auth.user.role) === "coordinator") {
+          if (normalizeRole(liveAuth.user.role) === "coordinator") {
             setAdminNotifs(dbNotifs);
           } else {
             setStudentNotifs(dbNotifs);
@@ -280,6 +384,16 @@ export function AppProvider({ children }) {
       console.warn("Supabase sync failed, using current state.", error);
     }
   }, [auth?.user]);
+
+  // The bootstrap effect below must run ONCE per mount. It restores the demo
+  // session from localStorage and re-reads the backend session, so having it
+  // depend on syncLiveData (which is keyed on auth.user and therefore changes
+  // identity on every profile edit) made it re-run and re-restore the SAVED
+  // session after each save — silently reverting a just-claimed domain to the
+  // stale value on disk. The ref keeps the effect stable while still calling
+  // the newest closure.
+  const syncLiveDataRef = useRef(syncLiveData);
+  syncLiveDataRef.current = syncLiveData;
 
   const commitAuth = useCallback((nextAuthState) => {
     setAuth((prev) => {
@@ -304,15 +418,19 @@ export function AppProvider({ children }) {
     async (user) => {
       if (!user) {
         setAuth(null);
-        return;
+        return null;
       }
 
+      // Returns the state it committed so the bootstrap's first sync can run
+      // against the REAL auth instead of the still-null closure value.
       try {
         const profile = await fetchCurrentProfile(user.id);
-        commitAuth(buildAuthState(user, profile));
+        const next = buildAuthState(user, profile);
+        commitAuth(next);
+        return next;
       } catch (error) {
         console.warn("Profile hydration failed", error);
-        commitAuth({
+        const fallback = {
           role: "student",
           user: {
             id: user.id,
@@ -325,7 +443,9 @@ export function AppProvider({ children }) {
             year: "3rd Year",
             joined: "2024-08-12",
           },
-        });
+        };
+        commitAuth(fallback);
+        return fallback;
       }
     },
     [commitAuth],
@@ -335,6 +455,8 @@ export function AppProvider({ children }) {
     let active = true;
 
     const bootstrap = async () => {
+      // The auth actually restored this boot, handed to the first sync below.
+      let restoredAuth = null;
       try {
         const sessionRes = supabase?.auth?.getSession
           ? await supabase.auth
@@ -344,14 +466,50 @@ export function AppProvider({ children }) {
         const session = sessionRes?.data?.session;
 
         if (active && session?.user) {
-          await hydrateAuthFromUser(session.user);
+          restoredAuth = (await hydrateAuthFromUser(session.user)) || null;
+        }
+
+        // When no real session exists at bootstrap (e.g. a fresh reload in
+        // demo mode, or a real backend with no stored session), rehydrate
+        // from a persisted local session so a refresh does not silently drop
+        // the user back to /login. The persisted session is a demo-only
+        // concept — it is never trusted when a real Supabase backend is
+        // configured.
+        if (active && !session?.user && !isSupabaseConfigured) {
+          const saved = localStorage.getItem("nexura_session");
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed?.user && parsed?.role) {
+                // Restore the saved session exactly as it was saved.
+                //
+                // Funnelling it through hydrateAuthFromUser() treated an auth
+                // SESSION as a Supabase USER: that path reads user.id to fetch a
+                // profile and user.email to derive a name, and neither exists on
+                // a session object, so the fallback in its catch block threw on
+                // user.email.split() and this catch deleted the key. Every reload
+                // therefore dropped a demo coordinator — back to signed out, or
+                // back as a student with no domain.
+                restoredAuth = { ...parsed, domain: getAuthDomain(parsed) };
+                commitAuth(restoredAuth);
+              }
+            } catch (err) {
+              console.warn("Saved demo session was unreadable:", err);
+              localStorage.removeItem("nexura_session");
+            }
+          }
         }
 
         if (active) {
-          await syncLiveData();
+          await syncLiveDataRef.current(restoredAuth || undefined);
         }
       } catch (error) {
         console.warn("Session bootstrap failed", error);
+      } finally {
+        // A failed or empty bootstrap must still settle the gate, otherwise a
+        // signed-out visitor would wait forever on a blank screen instead of
+        // reaching /login.
+        if (active) setAuthReady(true);
       }
     };
 
@@ -381,7 +539,7 @@ export function AppProvider({ children }) {
             "postgres_changes",
             { event: "*", schema: "public", table },
             () => {
-              if (active) syncLiveData();
+              if (active) syncLiveDataRef.current();
             },
           );
         };
@@ -395,7 +553,7 @@ export function AppProvider({ children }) {
         const startFallbackPolling = () => {
           if (pollTimer || !active) return;
           pollTimer = setInterval(() => {
-            if (active) syncLiveData();
+            if (active) syncLiveDataRef.current();
           }, 25000);
         };
 
@@ -434,7 +592,7 @@ export function AppProvider({ children }) {
     if (!channel) {
       // Realtime channel unavailable: keep live data fresh via polling.
       pollTimer = setInterval(() => {
-        if (active) syncLiveData();
+        if (active) syncLiveDataRef.current();
       }, 25000);
     }
 
@@ -454,7 +612,7 @@ export function AppProvider({ children }) {
               // logged-in UI.
               setAuth(null);
             }
-            await syncLiveData();
+            await syncLiveDataRef.current();
           } catch (error) {
             console.warn("Auth change sync failed", error);
           }
@@ -474,7 +632,7 @@ export function AppProvider({ children }) {
         channel.unsubscribe();
       }
     };
-  }, [hydrateAuthFromUser, syncLiveData]);
+  }, [commitAuth, hydrateAuthFromUser]);
 
   const login = useCallback(
     async (role, email, password) => {
@@ -521,7 +679,11 @@ export function AppProvider({ children }) {
           profile || { role: effectiveRole },
         );
         setAuth(authState);
-        await syncLiveData();
+        // Pass the just-committed state: this callback still closes over the
+        // PREVIOUS auth (null on a fresh login), which would sync against no
+        // caller at all — empty roster, no notifications — on the very first
+        // dashboard render after logging in.
+        await syncLiveData(authState);
         return authState;
       } catch (err) {
         // Demo fallback ONLY when no real Supabase backend is configured
@@ -529,10 +691,48 @@ export function AppProvider({ children }) {
         // backend, every failure — wrong password, unknown email, network
         // error — is rethrown so the login attempt is explicitly rejected.
         if (!isSupabaseConfigured) {
-          if (requestedRole !== "student") {
-            throw new Error(
-              "Access Denied: local demo sessions are student-only. Coordinator access requires a database role.",
+          // Demo mode (no backend configured): the Coordinator tab opens a
+          // seeded local coordinator session so the whole assign → submit →
+          // review loop can be demoed offline. This branch is unreachable
+          // when a real Supabase backend is configured — production roles
+          // still come exclusively from the database profile above.
+          if (requestedRole === "coordinator") {
+            const demoCoordinator = {
+              ...ADMIN_USER,
+              email: email || ADMIN_USER.email,
+              role: "coordinator",
+              // Real coordinators are seeded with a domain (see
+              // migrations/2026-10-15-seed-domain-coordinators.sql), so the
+              // demo one carries one too. Without it the offline build could
+              // not show the domain badge or the locked task-form field, and
+              // demo mode would silently misrepresent the coordinator UI.
+              domain: "technical",
+              branch: "Computer Science",
+              year: "Faculty",
+              joined: "2024-08-12",
+            };
+            const coordinatorState = {
+              role: "coordinator",
+              // Same two levels buildAuthState() sets, so every reader — the
+              // domain badge, the locked task field, the filtered fetch — sees
+              // the domain no matter which level it consults.
+              domain: demoCoordinator.domain,
+              user: demoCoordinator,
+            };
+            setAuth(coordinatorState);
+            try {
+              localStorage.setItem(
+                "nexura_session",
+                JSON.stringify(coordinatorState),
+              );
+            } catch (e) {
+              console.warn("Could not persist demo session:", e);
+            }
+            pushToast(
+              "Demo coordinator session (no backend configured).",
+              "warning",
             );
+            return coordinatorState;
           }
           const demoUser = {
             id: "s1",
@@ -550,9 +750,18 @@ export function AppProvider({ children }) {
 
           const authState = {
             role: demoUser.role,
+            domain: demoUser.domain || null,
             user: demoUser,
           };
           setAuth(authState);
+          try {
+            localStorage.setItem(
+              "nexura_session",
+              JSON.stringify(authState),
+            );
+          } catch (e) {
+            console.warn("Could not persist demo session:", e);
+          }
           return authState;
         }
         throw err;
@@ -562,9 +771,9 @@ export function AppProvider({ children }) {
   );
 
   const signup = useCallback(
-    async (name, email, password, role = "student") => {
+    async (name, email, password, role = "student", domain = null) => {
       try {
-        const result = await signUpUser(email, password, name);
+        const result = await signUpUser(email, password, name, domain);
         const user = result?.user;
 
         if (user) {
@@ -594,16 +803,26 @@ export function AppProvider({ children }) {
           return authState;
         }
       } catch (err) {
-        console.warn("Supabase signup failed, creating local session:", err);
+        // With a real backend configured, a failed signup must reach the user.
+        // Swallowing it and falling through to the local session below minted a
+        // "signed in" student whose account does not exist in the database:
+        // registration looked successful while every later write failed. The
+        // demo fallback is only legitimate when there is no backend at all.
+        if (isSupabaseConfigured) throw err;
+        console.warn("Supabase unavailable, using local demo session:", err);
       }
 
-      // Local fallback session: always a student. Same rule as login — the
-      // demo path must never mint a coordinator.
+      // Demo-mode-only fallback session (no backend configured): always a
+      // student. Same rule as login — this path must never mint a coordinator.
       const localUser = {
         id: `u_${Date.now()}`,
         email,
         name,
         role: "student",
+        // Mirrors production, where handle_new_user() stores the domain chosen
+        // on the form (migrations/2026-10-15-signup-domain.sql). Demo accounts
+        // should have the same shape as real ones.
+        domain: domain || null,
         avatarColor: "#7C3AED",
         rollNo: "CS21B" + Math.floor(100 + Math.random() * 900),
         branch: "Computer Science",
@@ -613,7 +832,11 @@ export function AppProvider({ children }) {
 
       setStudents((prev) => [localUser, ...prev]);
 
-      const authState = { role: "student", user: localUser };
+      const authState = {
+        role: "student",
+        domain: localUser.domain || null,
+        user: localUser,
+      };
       setAuth(authState);
       return authState;
     },
@@ -646,7 +869,7 @@ export function AppProvider({ children }) {
       const doomed = [];
       for (let i = 0; i < localStorage.length; i += 1) {
         const key = localStorage.key(i);
-        if (key && (key.startsWith("sb-") || key.startsWith("nexura_"))) {
+        if (key && (key.startsWith("sb-") || key.startsWith("nexura_") || key === "nexura_session")) {
           doomed.push(key);
         }
       }
@@ -668,6 +891,12 @@ export function AppProvider({ children }) {
     }
   }, []);
 
+  // A scoped coordinator always files into their own domain. Hoisted out of the
+  // callback so the dependency is an ordinary value rather than a member access
+  // the React Compiler has to infer from inside and cannot reconcile with the
+  // manual dependency array.
+  const callerDomainForTasks = getAuthDomain(auth);
+
   const createTask = useCallback(
     async (taskData) => {
       const allStudentIds = students.map((s) => s.id);
@@ -679,15 +908,29 @@ export function AppProvider({ children }) {
       console.log("[context createTask] Starting. assigned:", assigned);
 
       try {
-        const created = await createDbTask(taskData);
+        // The domain is not the client's to choose: a scoped coordinator always
+        // writes into their own domain, and the database trigger enforces the
+        // same rule on the row itself. A super-admin has no domain of their
+        // own, so they pick one on the form.
+        const created = await createDbTask({
+          ...taskData,
+          domain: callerDomainForTasks || taskData.domain || null,
+        });
         console.log("[context createTask] createDbTask returned:", created);
-        if (created) {
-          const normalized = normalizeTask(created);
-          const merged = { ...normalized, assignedTo: assigned };
-          setTasks((prev) => [merged, ...prev]);
-          pushToast("Task created successfully!");
-          return merged;
+
+        // The DB call returned — but only treat it as success when the
+        // returned row is actually usable. A null/undefined response means
+        // the insert did not produce a task row, so this must not toast
+        // success and must not update React state.
+        if (!created) {
+          throw new Error("Task creation returned no data");
         }
+
+        const normalized = normalizeTask(created);
+        const merged = { ...normalized, assignedTo: assigned };
+        setTasks((prev) => [merged, ...prev]);
+        pushToast("Task created successfully!");
+        return merged;
       } catch (err) {
         console.error("[context createTask] Database task creation failed:", err?.message || err);
       }
@@ -698,7 +941,7 @@ export function AppProvider({ children }) {
       );
       return null;
     },
-    [pushToast, students],
+    [callerDomainForTasks, pushToast, students],
   );
 
   const updateTask = useCallback(
@@ -731,6 +974,18 @@ export function AppProvider({ children }) {
         return;
       }
       pushToast("Task updated successfully!");
+      return;
+
+    // Local/demo update: the change lives in React state only. This branch
+    // is only reachable when no real Supabase backend is configured, so there
+    // is no DB to reconcile with — the optimistic update above already updated
+    // the UI, and we keep it there for the rest of the session.
+    if (!isSupabaseConfigured) {
+      pushToast("Task updated (local session only — resets on reload).", "warning");
+      return;
+    }
+
+    pushToast("Task update could not be saved.", "danger");
     },
     [pushToast, syncLiveData],
   );
@@ -781,6 +1036,22 @@ export function AppProvider({ children }) {
         attempt: attempt || 1,
       };
 
+      // Demo mode (no backend): keep the submission in memory like every
+      // other demo record. Nothing is persisted — a reload resets it, and
+      // the demo coordinator sees it because both sessions share state.
+      if (!isSupabaseConfigured) {
+        setSubmissions((prev) => [
+          newSub,
+          ...prev.filter((s) => s.id !== newSub.id),
+        ]);
+        pushToast(
+          attempt > 1
+            ? "Resubmitted successfully!"
+            : "Task submitted successfully!",
+        );
+        return newSub;
+      }
+
       try {
         let dbRes;
         if (payload?.file) {
@@ -788,28 +1059,56 @@ export function AppProvider({ children }) {
             githubUrl: payload?.githubUrl || "",
             liveUrl: payload?.liveUrl || "",
             notes: payload?.notes || "",
+            attempt: attempt || 1,
           });
         } else {
-          const { data, error } = await supabase
+          // Link-only submission. submissions has unique(student_id, task_id),
+          // so a resubmission must UPDATE the existing row — a plain insert
+          // fails with a duplicate-key error. file_url is reserved for real
+          // uploads; external links belong in github_url/live_url.
+          const { data: existing, error: lookupError } = await supabase
             .from("submissions")
-            .insert([
-              {
-                student_id: effStudentId,
-                task_id: taskId,
-                file_url:
-                  payload?.githubUrl ||
-                  payload?.liveUrl ||
-                  payload?.fileName ||
-                  "",
-                github_url: payload?.githubUrl || "",
-                live_url: payload?.liveUrl || "",
-                notes: payload?.notes || "",
-                status: "pending",
-              },
-            ])
-            .select()
-            .single();
+            .select("id")
+            .eq("student_id", effStudentId)
+            .eq("task_id", taskId)
+            .maybeSingle();
 
+          if (lookupError && lookupError.code !== "PGRST116") {
+            throw lookupError;
+          }
+
+          const row = {
+            github_url: payload?.githubUrl || "",
+            live_url: payload?.liveUrl || "",
+            notes: payload?.notes || "",
+            status: "pending",
+            attempt: attempt || 1,
+            // created_at drives the "Submitted" timestamp in the UI, so a
+            // resubmission must advance it to now.
+            ...(existing?.id ? { created_at: new Date().toISOString() } : {}),
+          };
+
+          const query = existing?.id
+            ? supabase
+                .from("submissions")
+                .update(row)
+                .eq("id", existing.id)
+                .select()
+                .single()
+            : supabase
+                .from("submissions")
+                .insert([
+                  {
+                    ...row,
+                    student_id: effStudentId,
+                    task_id: taskId,
+                    file_url: null,
+                  },
+                ])
+                .select()
+                .single();
+
+          const { data, error } = await query;
           if (error) throw error;
           dbRes = data;
         }
@@ -880,11 +1179,64 @@ export function AppProvider({ children }) {
         pushToast("Review could not be saved to the database.", "danger");
         await syncLiveData(); // Revert optimistic state to DB truth.
         return;
-      }
-
-      // The student-facing notification is created by the DB trigger on the
+      }        // The student-facing notification is created by the DB trigger on the
       // status change, so it survives reloads and reaches the student's
       // account even in a different session.
+      if (isSupabaseConfigured) {
+        pushToast(
+          status === "approved"
+            ? "Submission approved"
+            : "Submission rejected with feedback",
+          status === "approved" ? "success" : "danger",
+        );
+        return;
+      }
+
+      // Demo mode: there is no DB trigger, so create the student-facing
+      // notification in React state so the student actually sees the result
+      // of the review during an offline demo.
+      const studentId = (
+        submissions.find((s) => s.id === submissionId)?.studentId ||
+        ""
+      );
+      if (studentId) {
+        const inbox = role === "coordinator" ? adminNotifs : studentNotifs;
+        const setter = role === "coordinator" ? setAdminNotifs : setStudentNotifs;
+        const existingUnread = [
+          ...inbox,
+        ].filter((n) => !n.read && n.link?.startsWith(`/student/submissions/${submissionId}`)).length;
+        setter((prev) => [
+          {
+            id: `notif_${Date.now()}_${submissionId}`,
+            type: status === "approved" ? "approved" : "rejected",
+            title: status === "approved" ? "Submission approved" : "Changes requested",
+            message: status === "approved"
+              ? "Your submission was approved by the coordinator."
+              : feedback || "The coordinator requested changes on your submission.",
+            link: `/student/submissions/${submissionId}`,
+            read: false,
+            time: reviewedAt,
+          },
+          ...prev,
+        ]);
+        if (role === "student" && !existingUnread) {
+          setter((prev) => [
+            {
+              id: `notif_${Date.now()}_${submissionId}`,
+              type: status === "approved" ? "approved" : "rejected",
+              title: status === "approved" ? "Submission approved" : "Changes requested",
+              message: status === "approved"
+                ? "Your submission was approved by the coordinator."
+                : feedback || "The coordinator requested changes on your submission.",
+              link: `/student/submissions/${submissionId}`,
+              read: false,
+              time: reviewedAt,
+            },
+            ...prev,
+          ]);
+        }
+      }
+
       pushToast(
         status === "approved"
           ? "Submission approved"
@@ -909,29 +1261,223 @@ export function AppProvider({ children }) {
   );
 
   const updateProfile = useCallback(
-    async (name, email) => {
-      if (auth?.user) {
-        const updatedUser = {
-          ...auth.user,
-          name: name || auth.user.name,
-          email: email || auth.user.email,
+    async (name, email, extras = {}) => {
+      if (!auth?.user) return;
+
+      // Destructured BEFORE the demo-mode branch below, not after it: the demo
+      // branch writes the claimed domain too, and reaching it before this
+      // declaration put `domain` in its temporal dead zone — every demo-mode
+      // save threw "domain is not defined" and the form silently did nothing.
+      const { roll_no, branch, year, domain } = extras;
+
+      const nextName = name || auth.user.name;
+      const nextEmail = email || auth.user.email;
+      const updatedUser = { ...auth.user, name: nextName, email: nextEmail };
+      setAuth((prev) => (prev ? { ...prev, user: updatedUser } : prev));
+
+      if (!isSupabaseConfigured) {
+        // Demo mode: the change lives in this session's state — and is written
+        // back to the persisted demo session.
+        //
+        // A claimed domain has to be reflected at BOTH levels of the session,
+        // the way buildAuthState writes it, because getAuthDomain() reads
+        // either. Writing only one is what made the coordinator badge and the
+        // locked task field invisible in demo mode while looking right in
+        // production.
+        //
+        // Persisting matters because the session itself already survives a
+        // refresh (the bootstrap restores it from localStorage): keeping only
+        // the in-memory copy meant the next mount restored the OLD row and the
+        // freshly claimed domain vanished, so the save looked like a no-op.
+        // roll no / branch / year were previously dropped on this path: only
+        // name and email reached the session, so in demo mode the form saved
+        // nothing but the name and the profile card kept the old roll number
+        // even though the field above it showed the new one.
+        // They are carried here rather than into updatedUser so production
+        // keeps showing them only once the database has accepted the write.
+        const nextAuth = {
+          ...auth,
+          user: {
+            ...updatedUser,
+            ...(roll_no ? { rollNo: roll_no } : {}),
+            ...(branch ? { branch } : {}),
+            ...(year ? { year } : {}),
+            ...(domain ? { domain } : {}),
+          },
+          ...(domain ? { domain } : {}),
         };
-        setAuth((prev) => (prev ? { ...prev, user: updatedUser } : prev));
+        setAuth(nextAuth);
         try {
-          // Persist both name and email to the profiles table so the change
-          // survives page reloads. Previously only name was saved here;
-          // email was applied to local state and silently lost on reload.
-          await supabase
-            .from("profiles")
-            .update({ name, email })
-            .eq("id", auth.user.id);
+          localStorage.setItem("nexura_session", JSON.stringify(nextAuth));
         } catch (e) {
-          console.warn("Supabase profile update skipped:", e);
+          console.warn("Could not persist demo session:", e);
         }
-        pushToast("Profile updated successfully!");
+        pushToast("Profile updated for this demo session.", "warning");
+        return;
+      }
+
+      // Email is controlled by Auth and synced by the DB trigger; the portal
+      // edits it only for display purposes in the UI, never as an independent
+      // profile field. When the request comes from the editable profile form,
+      // keep the existing email untouched on the server side.
+      const profileUpdates = { name: nextName };
+      if (roll_no !== undefined) profileUpdates.roll_no = roll_no;
+      if (branch !== undefined) profileUpdates.branch = branch;
+      if (year !== undefined) profileUpdates.year = year;
+      // A domain travels only when one was chosen, and the database accepts it
+      // only while the account has none — a one-time claim. Every other kind of
+      // domain change from the browser is refused by
+      // prevent_profile_role_escalation(), so sending one on a normal profile
+      // save would turn "Save changes" into an error rather than a no-op.
+      if (domain) profileUpdates.domain = domain;
+
+      try {
+        // Persist both name and email to the profiles table so the change
+        // survives page reloads. The returned error MUST be checked:
+        // supabase-js resolves with { error } instead of throwing, so
+        // skipping this check toasted success even when the write was
+        // rejected (e.g. before profiles.email existed in the schema).
+        const { error } = await supabase
+          .from("profiles")
+          .update(profileUpdates)
+          .eq("id", auth.user.id);
+        if (error) throw error;
+        // The database now holds the claimed domain, but the session in memory
+        // does not: mirror it so the locked field, the domain badge and the
+        // domain-scoped task list update on the spot instead of only after the
+        // next reload re-reads the profile row.
+        if (domain) {
+          setAuth((prev) =>
+            prev ? { ...prev, domain, user: { ...prev.user, domain } } : prev,
+          );
+        }
+        pushToast(
+          domain
+            ? `Profile updated — you are now in the ${domain} domain.`
+            : "Profile updated successfully!",
+        );
+      } catch (e) {
+        console.warn("Profile update failed:", e);
+        pushToast(
+          `Could not save profile changes: ${e?.message || "database error"}`,
+          "danger",
+        );
       }
     },
     [auth?.user, pushToast],
+  );
+
+  // A coordinator maintaining the roster of their own domain — and the
+  // super-admin maintaining everyone's. WHICH rows may be touched is the
+  // database's decision ("Profiles update self or staff"), and WHICH columns
+  // may change is the guard's (a domain may be set only while it is absent,
+  // and only into a domain the caller can access), so this function does no
+  // authorization of its own: it sends the change, mirrors it in local state,
+  // and surfaces whatever the database says.
+  const updateStudentProfile = useCallback(
+    async (studentId, updates = {}) => {
+      if (!studentId || !auth?.user) return false;
+
+      const clean = {};
+      if (updates.name !== undefined) clean.name = updates.name;
+      if (updates.roll_no !== undefined) clean.roll_no = updates.roll_no;
+      if (updates.branch !== undefined) clean.branch = updates.branch;
+      if (updates.year !== undefined) clean.year = updates.year;
+      // Only ever sent while the account has no domain: sending one on an
+      // ordinary roster edit would turn a save into a refused domain change.
+      if (updates.domain) clean.domain = updates.domain;
+      if (Object.keys(clean).length === 0) return true;
+
+      const applyLocally = () =>
+        setStudents((prev) =>
+          prev.map((row) => {
+            if (row.id !== studentId) return row;
+            return {
+              ...row,
+              ...(clean.name !== undefined ? { name: clean.name } : {}),
+              ...(clean.roll_no !== undefined ? { rollNo: clean.roll_no } : {}),
+              ...(clean.branch !== undefined ? { branch: clean.branch } : {}),
+              ...(clean.year !== undefined ? { year: clean.year } : {}),
+              ...(clean.domain !== undefined ? { domain: clean.domain } : {}),
+            };
+          }),
+        );
+
+      if (!isSupabaseConfigured) {
+        applyLocally();
+        pushToast(
+          "Roster updated for this demo session (resets on reload).",
+          "warning",
+        );
+        return true;
+      }
+
+      try {
+        // The error MUST be checked: supabase-js resolves with { error }
+        // instead of throwing, so skipping it would toast success on a
+        // write the policy just rejected (e.g. assigning a student to a
+        // domain this coordinator does not own).
+        const { error } = await supabase
+          .from("profiles")
+          .update(clean)
+          .eq("id", studentId);
+        if (error) throw error;
+        applyLocally();
+        pushToast("Student record updated.");
+        return true;
+      } catch (e) {
+        console.warn("Roster update failed:", e);
+        pushToast(
+          `Could not update student: ${e?.message || "database error"}`,
+          "danger",
+        );
+        return false;
+      }
+    },
+    [auth?.user, pushToast],
+  );
+
+  const openSubmissionFile = useCallback(
+    async (submission) => {
+      const fileUrl = submission?.fileUrl || submission?.file_url || "";
+
+      if (!fileUrl) {
+        pushToast("This submission has no uploaded file.", "warning");
+        return;
+      }
+      if (!isSupabaseConfigured) {
+        pushToast("Demo mode: files are not stored locally.", "warning");
+        return;
+      }
+      // Legacy rows stored an external link here — open it safely as-is.
+      if (!isStorageFileUrl(fileUrl)) {
+        if (!openSafeUrl(fileUrl)) {
+          pushToast("That file link is not safe to open.", "danger");
+        }
+        return;
+      }
+
+      // Signed URLs expire after an hour; the embedded object path never
+      // does, so mint a fresh signed URL at click time.
+      const path = extractStoragePath(fileUrl);
+      if (!path) {
+        pushToast("Could not read the file location.", "danger");
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase.storage
+          .from("task-submissions")
+          .createSignedUrl(path, 60 * 60);
+        if (error) throw error;
+        if (!data?.signedUrl) throw new Error("No signed URL returned");
+        openSafeUrl(data.signedUrl);
+      } catch (err) {
+        console.warn("Could not open submission file:", err);
+        pushToast("Could not open the file. Please try again.", "danger");
+      }
+    },
+    [pushToast],
   );
 
   const getStudent = useCallback(
@@ -1044,6 +1590,7 @@ export function AppProvider({ children }) {
   const value = useMemo(
     () => ({
       auth,
+      authReady,
       login,
       signup,
       logout,
@@ -1062,6 +1609,8 @@ export function AppProvider({ children }) {
       reviewSubmission,
       removeSubmission,
       updateProfile,
+      updateStudentProfile,
+      openSubmissionFile,
       getStudent,
       getTask,
       markNotifRead,
@@ -1069,6 +1618,7 @@ export function AppProvider({ children }) {
     }),
     [
       auth,
+      authReady,
       login,
       signup,
       logout,
@@ -1087,6 +1637,8 @@ export function AppProvider({ children }) {
       reviewSubmission,
       removeSubmission,
       updateProfile,
+      updateStudentProfile,
+      openSubmissionFile,
       getStudent,
       getTask,
       markNotifRead,
@@ -1094,7 +1646,9 @@ export function AppProvider({ children }) {
     ],
   );
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>{children}</AppContext.Provider>
+  );
 }
 
 export function useApp() {

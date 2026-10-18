@@ -1,6 +1,30 @@
 node_modules
 dist
+# The offline demo bundle is built build output (vite build --outDir dist-demo),
+# not source — keeping it out of git avoids committing a stale copy of the app.
+dist-demo
 .env
-branch_structure.json
-temp_auto_push.bat
-temp_interactive_push.bat
+.env.local
+# Local dev-server / tool logs.
+*.log
+
+# Local scratch scripts, historical one-off work logs, and the legacy nested
+# app copy (a separate git repo). Kept on disk; excluded so `git status`
+# shows only meaningful project files.
+debug-browser.js
+debug-login.js
+ERROR_400_FIX_SUMMARY.md
+COORDINATOR_PORTAL_LIVE_DATA.md
+Nexura-Portal
+# Freebuff hosting workspace (auto-generated platform files)
+sites/
+
+# Freebuff platform metadata (project id, migration scratch, preview logs)
+# and editor-local settings — not part of the application.
+.freebuff/
+.vscode/
+
+# Historical planning / review write-ups, kept out of the repo
+DESIGN_DOC.md
+DOMAIN_COORDINATOR_PLAN.md
+REPORT_FOR_HEAD_REVIEW.md

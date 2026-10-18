@@ -70,7 +70,7 @@ export default function ManageTasks() {
             <div key={task.id} className="card p-5 flex flex-col gap-3.5">
               <div>
                 <p className="text-xs font-semibold text-nexura-400 mb-1">
-                  {task.category || "General"}
+                  {task.category || "Web Development"}
                 </p>
                 <h3 className="font-display font-semibold text-white leading-snug">
                   {task.title}

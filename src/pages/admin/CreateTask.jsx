@@ -1,14 +1,39 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Plus, X, Send, Users, Code2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Plus,
+  X,
+  Send,
+  Users,
+  Layers,
+  ChevronDown,
+} from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { DIFFICULTIES } from "../../data/mockData";
-
-const FIXED_CATEGORY = "Web Development";
+// Club domains live in one place now, alongside their database slugs — see
+// src/lib/domains.js for why the labels must stay byte-exact.
+import {
+  DOMAINS,
+  TASK_CATEGORIES,
+  getDomainLabel,
+  getDomainSlug,
+  getAuthDomain,
+} from "../../lib/domains";
 
 export default function CreateTask() {
-  const { students, createTask } = useApp();
+  const { auth, students, createTask } = useApp();
   const navigate = useNavigate();
+
+  // A scoped coordinator cannot choose a domain: theirs is fixed by their
+  // profile, and the database rejects a task filed anywhere else. Only a
+  // super-admin — who has no domain of their own — gets a real dropdown.
+  const lockedDomain = getAuthDomain(auth);
+  const [domainSlug, setDomainSlug] = useState(getDomainSlug(TASK_CATEGORIES[0]));
+  // Derived rather than held in state, so a locked coordinator needs no effect
+  // to stay in sync with an auth object that may arrive after the first render.
+  const effectiveDomain = lockedDomain || domainSlug;
+  const category = getDomainLabel(effectiveDomain) || TASK_CATEGORIES[0];
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -52,7 +77,14 @@ export default function CreateTask() {
     const errs = {};
     if (!title.trim()) errs.title = "Title is required";
     if (!description.trim()) errs.description = "Description is required";
-    if (!deadline) errs.deadline = "Deadline is required";
+    if (!effectiveDomain) errs.category = "Choose a domain";
+    if (!deadline) {
+      errs.deadline = "Deadline is required";
+    } else if (isNaN(Date.parse(deadline))) {
+      errs.deadline = "Deadline is not a valid date";
+    } else if (new Date(deadline) <= new Date()) {
+      errs.deadline = "Deadline must be in the future";
+    }
     if (assignedTo.length === 0)
       errs.assignedTo = "Assign at least one student";
     const reqs = requirements.filter((r) => r.trim());
@@ -70,14 +102,21 @@ export default function CreateTask() {
 
     setSubmitting(true);
     try {
-      console.log("[CreateTask] Submitting:", { title: title.trim(), assignedTo, deadline });
+      console.log("[CreateTask] Submitting:", {
+        title: title.trim(),
+        assignedTo,
+        deadline,
+      });
       const result = await createTask({
         title: title.trim(),
-        category: FIXED_CATEGORY,
+        category: category.trim(),
+        // The slug, which is the authoritative key; `category` above stays as
+        // the display value every task card and detail view renders.
+        domain: effectiveDomain,
         description: description.trim(),
         difficulty,
         points: Number(points),
-        deadline,
+        deadline: deadline || new Date().toISOString().slice(0, 10),
         requirements: requirements.filter((r) => r.trim()),
         assignedTo,
       });
@@ -120,11 +159,42 @@ export default function CreateTask() {
 
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
-            <label className="label-text">Category</label>
-            <div className="input-field flex items-center gap-2 text-nexura-200 bg-white/[0.03] cursor-not-allowed select-none">
-              <Code2 className="w-4 h-4 text-nexura-400 shrink-0" />
-              {FIXED_CATEGORY}
-            </div>
+            <label className="label-text">Domain</label>
+            {lockedDomain ? (
+              // Read-only for a scoped coordinator. A dropdown they are not
+              // allowed to use only invited the mistake of picking another
+              // domain, which the database would reject.
+              <div
+                className="input-field flex items-center gap-2 cursor-not-allowed"
+                aria-readonly="true"
+              >
+                <Layers className="w-4 h-4 text-nexura-400 shrink-0" />
+                <span className="truncate">{getDomainLabel(lockedDomain)}</span>
+              </div>
+            ) : (
+              <div className="relative">
+                <select
+                  value={effectiveDomain}
+                  onChange={(e) => setDomainSlug(e.target.value)}
+                  className="input-field appearance-none pr-10"
+                >
+                  {DOMAINS.map((d) => (
+                    <option key={d.slug} value={d.slug}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-4 h-4 text-nexura-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            )}
+            {lockedDomain && (
+              <p className="text-xs text-nexura-400 mt-1">
+                Tasks are always filed in your own domain.
+              </p>
+            )}
+            {errors.category && (
+              <p className="text-xs text-red-400 mt-1">{errors.category}</p>
+            )}
           </div>
           <div>
             <label className="label-text">Difficulty</label>
