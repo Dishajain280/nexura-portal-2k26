@@ -339,12 +339,7 @@ begin
     if new.role <> 'student' and not v_is_super then
       raise exception 'New profiles must start with the student role';
     end if;
-    -- Only enforce the id check when a user JWT is present (auth.uid() is null
-    -- during signup, where this trigger runs system-side through
-    -- handle_new_user instead).
-    if auth.uid() is not null
-       and new.id is distinct from auth.uid()
-       and not v_is_super then
+    if new.id is distinct from auth.uid() and not public.is_admin() then
       raise exception 'Profile creation is restricted to authenticated users';
     end if;
     return new;
@@ -628,31 +623,16 @@ for select using (
 );
 
 drop policy if exists "Profiles insert allowed" on public.profiles;
-drop policy if exists "Profiles insert self or super-admin" on public.profiles;
-create policy "Profiles insert self or super-admin" on public.profiles
-for insert with check (
-  (auth.uid() = id and role = 'student')
-  or public.is_super_admin()
-);
+create policy "Profiles insert allowed" on public.profiles for insert with check (auth.uid() = id and role = 'student');
 
--- A student edits their own row — the guard trigger decides which COLUMNS may
--- actually change — and staff edit students they are responsible for. The
--- `can_access_domain(domain)` test reads the OLD row in USING and the NEW row in
--- WITH CHECK, so a coordinator can update a student of their own domain and
--- cannot hand a student to another domain.
 drop policy if exists "Profiles update self" on public.profiles;
 drop policy if exists "Profiles update self or staff" on public.profiles;
 create policy "Profiles update self or staff" on public.profiles
 for update
-using (
-  auth.uid() = id
-  or public.is_super_admin()
-  or (public.is_staff() and public.can_access_domain(domain))
-)
+using (auth.uid() = id)
 with check (
   auth.uid() = id
-  or public.is_super_admin()
-  or (public.is_staff() and public.can_access_domain(domain))
+  and role = (select role from public.profiles where id = auth.uid())
 );
 
 -- Tasks — read and written by domain. `domain` in USING is the old row and in
@@ -800,20 +780,10 @@ grant usage on schema public to anon, authenticated;
 grant select on public.profiles, public.tasks, public.submissions to authenticated;
 grant select, insert, update, delete on public.notifications to authenticated;
 grant insert, update, delete on public.tasks, public.submissions to authenticated;
-grant update on public.profiles to authenticated;
 
--- ------------------------------------------------------------
--- 10) Realtime
--- ------------------------------------------------------------
--- Only create if not exists, to preserve existing subscriptions. Supabase
--- applies RLS to realtime rows, so the policies above govern what arrives.
-do $$
-begin
-  create publication supabase_realtime for table public.profiles, public.tasks, public.submissions, public.notifications;
-exception when others then
-  null; -- Publication may already exist; ignore the error.
-end
-$$;
+-- 8. FIXED Realtime Configurations (Simplified to completely bypass system column limits)
+drop publication if exists supabase_realtime;
+create publication supabase_realtime for table public.profiles, public.tasks, public.submissions, public.notifications;
 
 -- ------------------------------------------------------------
 -- 11) Storage
