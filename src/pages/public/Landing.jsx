@@ -1,7 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import {
-  Zap,
   ArrowRight,
   GitBranch,
   UploadCloud,
@@ -70,8 +69,12 @@ export default function Landing() {
       {/* Nav */}
       <header className="relative z-10 max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-5 sm:py-6 gap-3">
         <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-cta-gradient flex items-center justify-center shadow-glow-purple shadow-lg shrink-0">
-            <Zap className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="white" />
+          <div className="w-8 h-8 sm:w-9 sm:h-9 shrink-0">
+            <img
+              src="/nexura-logo.png"
+              alt="Nexura"
+              className="h-full w-full object-contain"
+            />
           </div>
           <span className="font-display font-extrabold text-base sm:text-lg tracking-wide truncate">
             NEXURA

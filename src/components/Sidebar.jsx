@@ -10,7 +10,6 @@ import {
   PlusSquare,
   Users,
   Inbox,
-  Zap,
   LogOut,
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
@@ -53,8 +52,12 @@ export default function Sidebar({ role, mobileOpen, onCloseMobile }) {
         {/* Logo */}
         <div className="flex items-center justify-between px-5 py-5">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-cta-gradient flex items-center justify-center shrink-0 shadow-glow-purple shadow-lg">
-              <Zap className="w-5 h-5 text-white" fill="white" />
+            <div className="w-9 h-9 shrink-0">
+              <img
+                src="/nexura-logo.png"
+                alt="Nexura"
+                className="h-full w-full object-contain"
+              />
             </div>
             <div>
               <p className="font-display font-extrabold text-base tracking-wide leading-none">

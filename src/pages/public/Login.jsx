@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  Zap,
   Mail,
   Lock,
   ArrowRight,
@@ -54,8 +53,12 @@ export default function Login() {
       <div className="relative w-full max-w-md">
         {/* Logo */}
         <Link to="/" className="flex items-center justify-center gap-2.5 mb-8">
-          <div className="w-9 h-9 rounded-xl bg-cta-gradient flex items-center justify-center shadow-glow-purple shadow-lg">
-            <Zap className="w-5 h-5 text-white" fill="white" />
+          <div className="w-9 h-9 shrink-0">
+            <img
+              src="/nexura-logo.png"
+              alt="Nexura"
+              className="h-full w-full object-contain"
+            />
           </div>
           <span className="font-display font-extrabold text-lg tracking-wide text-white">
             NEXURA
