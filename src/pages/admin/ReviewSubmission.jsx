@@ -7,7 +7,6 @@ import Modal from "../../components/Modal";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { formatDateTime, getStudentById, getTaskById } from "../../data/mockData";
 import { sanitizeUrl } from "../../lib/sanitizeUrl";
-import { isStorageFileUrl, extractStoragePath } from "../../lib/submissionFile";
 import SubmissionFilePreview from "../../components/SubmissionFilePreview";
 
 export default function ReviewSubmission() {
@@ -80,11 +79,10 @@ export default function ReviewSubmission() {
         </div>          <div className="mt-6 space-y-3">
           <h3 className="font-display font-semibold text-white">Submitted Work</h3>
 
-          {sub.fileName && (
+          {(sub.fileName || sub.fileUrl || sub.file_url) && (
             <SubmissionFilePreview
               fileName={sub.fileName}
               fileUrl={sub.fileUrl || sub.file_url || ""}
-              storagePath={isStorageFileUrl(sub.fileUrl || sub.file_url || "") || sub.fileUrl ? extractStoragePath(sub.fileUrl || sub.file_url || "") : ""}
               onOpen={() => openSubmissionFile(sub)}
             />
           )}
