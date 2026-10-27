@@ -1,9 +1,21 @@
 import React, { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 
-export default function Modal({ isOpen, onClose, title, children, footer, size = "md" }) {
+export default function Modal({
+  isOpen,
+  onClose,
+  title,
+  children,
+  footer,
+  size = "md",
+}) {
   const modalRef = useRef(null);
   const previousActive = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -11,17 +23,20 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     previousActive.current = document.activeElement;
     const onKey = (e) => {
       if (e.key === "Escape") {
-        onClose?.();
+        e.stopPropagation();
+        onCloseRef.current?.();
         return;
       }
       // Trap focus within modal
       if (e.key === "Tab" && modalRef.current) {
         const focusable = modalRef.current.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
         );
         if (focusable.length === 0) return;
+
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
+
         if (e.shiftKey && document.activeElement === first) {
           e.preventDefault();
           last.focus();
@@ -35,13 +50,19 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
 
-    // Focus first focusable element after animation starts
+    // Focus first focusable element after animation starts, but avoid stealing
+    // focus from an element the user is actively typing into.
     const timer = setTimeout(() => {
-      if (modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length > 0) focusable[0].focus();
+      if (!modalRef.current) return;
+      const focusable = modalRef.current.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+
+      const active = document.activeElement;
+      const insideModal = modalRef.current.contains(active);
+      if (!insideModal) {
+        focusable[0].focus();
       }
     }, 100);
 
@@ -53,7 +74,7 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
         previousActive.current.focus();
       }
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -86,7 +107,10 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
         {/* Title bar */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0">
           {title && (
-            <h3 id="modal-title" className="text-base font-display font-semibold text-white">
+            <h3
+              id="modal-title"
+              className="text-base font-display font-semibold text-white"
+            >
               {title}
             </h3>
           )}

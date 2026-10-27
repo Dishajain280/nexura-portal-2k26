@@ -3,8 +3,6 @@ dist
 # The offline demo bundle is built build output (vite build --outDir dist-demo),
 # not source — keeping it out of git avoids committing a stale copy of the app.
 dist-demo
-.env
-.env.local
 # Local dev-server / tool logs.
 *.log
 
@@ -22,7 +20,6 @@ sites/
 # Freebuff platform metadata (project id, migration scratch, preview logs)
 # and editor-local settings — not part of the application.
 .freebuff/
-.vscode/
 
 # Historical planning / review write-ups, kept out of the repo
 DESIGN_DOC.md
@@ -31,3 +28,4 @@ REPORT_FOR_HEAD_REVIEW.md
 branch_structure.json
 temp_auto_push.bat
 temp_interactive_push.bat
+config.bat
